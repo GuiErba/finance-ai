@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { NextRequest, after } from "next/server";
 import { processTextWithGemini, processAudioWithGemini } from "@/lib/gemini/client";
 import { downloadMedia, sendWhatsAppMessage } from "@/lib/whatsapp/service";
 import { persistTransactions } from "@/lib/services/transactions";
@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
  * e persiste no Supabase.
  *
  * Retorna 200 imediatamente para evitar retries da Meta.
- * O processamento pesado roda via waitUntil().
+ * O processamento pesado roda via after() do Next.js.
  */
 export async function POST(request: NextRequest) {
   const body = await request.json();
@@ -51,21 +51,12 @@ export async function POST(request: NextRequest) {
 
   const senderPhone = message.from;
 
-  // Processa a mensagem em background sem bloquear a resposta HTTP
-  const processingPromise = handleIncomingMessage(message, senderPhone);
-
-  // waitUntil mantém a função viva após o retorno do 200 OK,
-  // permitindo que o Gemini processe sem ser abortado pela Vercel.
-  // @ts-expect-error — waitUntil está disponível no runtime da Vercel
-  if (typeof request.waitUntil === "function") {
-    // @ts-expect-error
-    request.waitUntil(processingPromise);
-  } else {
-    // Fallback para desenvolvimento local: aguarda a promise
-    processingPromise.catch((err) =>
-      console.error("[Webhook] Erro no processamento:", err)
-    );
-  }
+  // after() executa a callback APÓS a resposta HTTP ser enviada.
+  // Isso garante que a Meta receba o 200 OK imediatamente enquanto
+  // o Gemini processa a mensagem em background (suportado na Vercel).
+  after(async () => {
+    await handleIncomingMessage(message, senderPhone);
+  });
 
   return new Response("OK", { status: 200 });
 }
