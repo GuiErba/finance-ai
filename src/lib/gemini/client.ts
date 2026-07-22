@@ -3,6 +3,40 @@ import type { GeminiTransactionResponse } from "@/lib/types/database";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
+/**
+ * Helper de retry com backoff exponencial.
+ * Tenta até `maxRetries` vezes quando o Gemini retorna 503 (alta demanda).
+ */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  baseDelayMs = 1000
+): Promise<T> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: unknown) {
+      const isRetryable =
+        error instanceof Error &&
+        (error.message.includes("503") ||
+          error.message.includes("429") ||
+          error.message.includes("high demand") ||
+          error.message.includes("RESOURCE_EXHAUSTED"));
+
+      if (!isRetryable || attempt === maxRetries) {
+        throw error;
+      }
+
+      const delay = baseDelayMs * Math.pow(2, attempt);
+      console.warn(
+        `[Gemini] Tentativa ${attempt + 1}/${maxRetries} falhou (${error.message}). Retentando em ${delay}ms...`
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw new Error("Unreachable");
+}
+
 const SYSTEM_PROMPT = `Você é um parser de dados financeiros de alta precisão. Seu objetivo é ler o input fornecido e extrair todas as transações de débito/crédito.
 
 Regras Estritas:
@@ -43,17 +77,19 @@ export async function processTextWithGemini(
 ): Promise<GeminiTransactionResponse> {
   const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-  const result = await model.generateContent({
-    contents: [
-      {
-        role: "user",
-        parts: [{ text: `${SYSTEM_PROMPT}\n\nInput do usuário:\n${text}` }],
+  const result = await withRetry(() =>
+    model.generateContent({
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: `${SYSTEM_PROMPT}\n\nInput do usuário:\n${text}` }],
+        },
+      ],
+      generationConfig: {
+        responseMimeType: "application/json",
       },
-    ],
-    generationConfig: {
-      responseMimeType: "application/json",
-    },
-  });
+    })
+  );
 
   const responseText = result.response.text();
   return JSON.parse(responseText) as GeminiTransactionResponse;
@@ -71,27 +107,29 @@ export async function processAudioWithGemini(
 
   const audioBase64 = audioBuffer.toString("base64");
 
-  const result = await model.generateContent({
-    contents: [
-      {
-        role: "user",
-        parts: [
-          {
-            inlineData: {
-              mimeType: mimeType,
-              data: audioBase64,
+  const result = await withRetry(() =>
+    model.generateContent({
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              inlineData: {
+                mimeType: mimeType,
+                data: audioBase64,
+              },
             },
-          },
-          {
-            text: `${SYSTEM_PROMPT}\n\nO áudio acima contém informações sobre gastos financeiros. Extraia todas as transações mencionadas.`,
-          },
-        ],
+            {
+              text: `${SYSTEM_PROMPT}\n\nO áudio acima contém informações sobre gastos financeiros. Extraia todas as transações mencionadas.`,
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        responseMimeType: "application/json",
       },
-    ],
-    generationConfig: {
-      responseMimeType: "application/json",
-    },
-  });
+    })
+  );
 
   const responseText = result.response.text();
   return JSON.parse(responseText) as GeminiTransactionResponse;

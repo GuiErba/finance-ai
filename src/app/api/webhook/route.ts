@@ -37,6 +37,10 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   const body = await request.json();
+  
+  // LOG CRÍTICO DE DEBUG
+  console.log("[Webhook] 📥 POST recebido!");
+  console.log(JSON.stringify(body, null, 2));
 
   // Validação básica: ignora payloads que não sejam mensagens
   const entry = body?.entry?.[0];
@@ -45,11 +49,12 @@ export async function POST(request: NextRequest) {
   const message = value?.messages?.[0];
 
   if (!message) {
-    // Pode ser uma notificação de status (delivered, read, etc.) — ignorar
+    console.log("[Webhook] ⚠️ Payload ignorado (não é uma mensagem):", value?.statuses ? "Status update" : "Outro");
     return new Response("OK", { status: 200 });
   }
 
   const senderPhone = message.from;
+  console.log(`[Webhook] 🚀 Iniciando processamento em background para: ${senderPhone}`);
 
   // after() executa a callback APÓS a resposta HTTP ser enviada.
   // Isso garante que a Meta receba o 200 OK imediatamente enquanto
